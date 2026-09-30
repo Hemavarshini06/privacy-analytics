@@ -1,7 +1,14 @@
 const express = require('express');
 const { getDB } = require('../db/database');
 const { authenticateToken } = require('../middleware/auth');
-const { applyLaplaceMechanism, computeAccuracy, checkFailureCases } = require('../utils/privacy');
+const { 
+  applyLaplaceMechanism, 
+  computeAccuracy, 
+  checkFailureCases,
+  getPrivacyLevel,
+  calculateMAE,
+  evaluateMultiEpsilon 
+} = require('../utils/privacy');
 
 const router = express.Router();
 
@@ -256,4 +263,163 @@ router.get('/comparison', authenticateToken, (req, res) => {
   }
 });
 
+// GET /api/analytics/accuracy-evaluation
+// Evaluates Actual vs DP Analytics across multiple epsilons (0.1, 0.5, 1.0)
+router.get('/accuracy-evaluation', authenticateToken, (req, res) => {
+  try {
+    const db = getDB();
+    const workflowId = getActiveWorkflowId(db, req);
+    const stages = db.prepare(`
+      SELECT * FROM stages WHERE workflow_id = ? ORDER BY stage_order
+    `).all(workflowId);
+
+    if (stages.length === 0) {
+      return res.json({ stages: [], evaluations: [], summary: {} });
+    }
+
+    const stageData = stages.map(stage => {
+      const actual = db.prepare(`
+        SELECT COUNT(DISTINCT session_id) as cnt FROM events WHERE workflow_id = ? AND stage_order = ?
+      `).get(workflowId, stage.stage_order);
+      return {
+        stage_id: stage.id,
+        stage_name: stage.name,
+        stage_order: stage.stage_order,
+        actualCount: actual ? actual.cnt : 0,
+      };
+    });
+
+    const epsilons = [0.1, 0.5, 1.0];
+    const actualCounts = stageData.map(s => s.actualCount);
+
+    const evaluations = epsilons.map(eps => {
+      const stageEstimates = stageData.map(s => {
+        const dp = applyLaplaceMechanism(s.actualCount, eps);
+        const absErr = Math.abs(s.actualCount - dp.noisyCount);
+        const relErr = s.actualCount > 0 ? parseFloat(((absErr / s.actualCount) * 100).toFixed(1)) : 0;
+        return {
+          stage_id: s.stage_id,
+          stage_name: s.stage_name,
+          actualCount: s.actualCount,
+          noisyCount: dp.noisyCount,
+          absoluteError: absErr,
+          relativeError: relErr,
+        };
+      });
+
+      const noisyCounts = stageEstimates.map(s => s.noisyCount);
+      const acc = computeAccuracy(actualCounts, noisyCounts);
+      const theoreticalMAE = parseFloat((1.0 / eps).toFixed(2));
+
+      return {
+        epsilon: eps,
+        privacyLevel: getPrivacyLevel(eps),
+        theoreticalMAE,
+        empiricalMAE: parseFloat(acc.meanAbsoluteError),
+        accuracyPercent: parseFloat(acc.accuracyPercent),
+        errorPercent: parseFloat(acc.errorPercent),
+        stageEstimates,
+      };
+    });
+
+    res.json({
+      workflowId,
+      stages: stageData,
+      evaluations,
+      evaluatedAt: new Date().toISOString(),
+      testedEpsilons: epsilons,
+    });
+  } catch (err) {
+    console.error('Accuracy evaluation error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// POST /api/analytics/accuracy-evaluation/run
+// Runs on-demand customized evaluation with customizable epsilons and iterations
+router.post('/accuracy-evaluation/run', authenticateToken, (req, res) => {
+  try {
+    const db = getDB();
+    const workflowId = getActiveWorkflowId(db, req);
+    const { epsilons = [0.1, 0.5, 1.0], iterations = 10 } = req.body;
+
+    const stages = db.prepare(`
+      SELECT * FROM stages WHERE workflow_id = ? ORDER BY stage_order
+    `).all(workflowId);
+
+    const stageData = stages.map(stage => {
+      const actual = db.prepare(`
+        SELECT COUNT(DISTINCT session_id) as cnt FROM events WHERE workflow_id = ? AND stage_order = ?
+      `).get(workflowId, stage.stage_order);
+      return {
+        stage_id: stage.id,
+        stage_name: stage.name,
+        stage_order: stage.stage_order,
+        actualCount: actual ? actual.cnt : 0,
+      };
+    });
+
+    const parsedEpsilons = (Array.isArray(epsilons) ? epsilons : [0.1, 0.5, 1.0])
+      .map(e => parseFloat(e))
+      .filter(e => !isNaN(e) && e > 0);
+
+    const actualCounts = stageData.map(s => s.actualCount);
+
+    const evaluations = parsedEpsilons.map(eps => {
+      let iterMAEs = [];
+      let lastRunEstimates = [];
+
+      for (let i = 0; i < iterations; i++) {
+        const currentEstimates = stageData.map(s => {
+          const dp = applyLaplaceMechanism(s.actualCount, eps);
+          const absErr = Math.abs(s.actualCount - dp.noisyCount);
+          const relErr = s.actualCount > 0 ? parseFloat(((absErr / s.actualCount) * 100).toFixed(1)) : 0;
+          return {
+            stage_id: s.stage_id,
+            stage_name: s.stage_name,
+            actualCount: s.actualCount,
+            noisyCount: dp.noisyCount,
+            absoluteError: absErr,
+            relativeError: relErr,
+          };
+        });
+
+        const trialMAE = calculateMAE(actualCounts, currentEstimates.map(c => c.noisyCount));
+        iterMAEs.push(trialMAE);
+        if (i === iterations - 1) {
+          lastRunEstimates = currentEstimates;
+        }
+      }
+
+      const meanIterMAE = parseFloat(
+        (iterMAEs.reduce((a, b) => a + b, 0) / iterMAEs.length).toFixed(2)
+      );
+      const acc = computeAccuracy(actualCounts, lastRunEstimates.map(s => s.noisyCount));
+
+      return {
+        epsilon: eps,
+        privacyLevel: getPrivacyLevel(eps),
+        theoreticalMAE: parseFloat((1.0 / eps).toFixed(2)),
+        empiricalMAE: meanIterMAE,
+        accuracyPercent: parseFloat(acc.accuracyPercent),
+        errorPercent: parseFloat(acc.errorPercent),
+        stageEstimates: lastRunEstimates,
+        iterationsRun: iterations,
+      };
+    });
+
+    res.json({
+      workflowId,
+      stages: stageData,
+      evaluations,
+      evaluatedAt: new Date().toISOString(),
+      testedEpsilons: parsedEpsilons,
+    });
+  } catch (err) {
+    console.error('Custom accuracy evaluation run error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
 module.exports = router;
+

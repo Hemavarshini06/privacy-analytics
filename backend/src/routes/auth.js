@@ -38,8 +38,9 @@ router.post('/login', (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials. Check your password.' });
     }
 
+    const tenantId = user.tenant_id || 1;
     const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role, username: user.username },
+      { id: user.id, email: user.email, role: user.role, username: user.username, tenant_id: tenantId },
       JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -51,6 +52,7 @@ router.post('/login', (req, res) => {
         username: user.username,
         email: user.email,
         role: user.role,
+        tenant_id: tenantId,
       },
     });
   } catch (err) {
@@ -85,6 +87,7 @@ router.post('/register', (req, res) => {
       username: uname,
       email,
       role: 'admin',
+      tenant_id: 1,
     };
 
     const token = jwt.sign(newUser, JWT_SECRET, { expiresIn: '24h' });
