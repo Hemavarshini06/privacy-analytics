@@ -50,6 +50,8 @@ const api = {
     getTrend: () => apiInstance.get('/api/analytics/trend'),
     getConsent: () => apiInstance.get('/api/analytics/consent'),
     getComparison: () => apiInstance.get('/api/analytics/comparison'),
+    getAccuracyEvaluation: () => apiInstance.get('/api/analytics/accuracy-evaluation'),
+    runAccuracyEvaluation: (data) => apiInstance.post('/api/analytics/accuracy-evaluation/run', data),
   },
   privacy: {
     getSettings: () => apiInstance.get('/api/privacy'),

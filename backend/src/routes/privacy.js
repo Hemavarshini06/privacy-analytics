@@ -1,6 +1,6 @@
 const express = require('express');
 const { getDB } = require('../db/database');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const { applyLaplaceMechanism, computeAccuracy, getPrivacyLevel, getBudgetWarning, checkFailureCases } = require('../utils/privacy');
 
 const router = express.Router();
@@ -70,8 +70,9 @@ const updateSettingsHandler = (req, res) => {
   }
 };
 
-router.put('/', authenticateToken, updateSettingsHandler);
-router.put('/settings', authenticateToken, updateSettingsHandler);
+// Admin only: modifying privacy settings
+router.put('/', authenticateToken, requireAdmin, updateSettingsHandler);
+router.put('/settings', authenticateToken, requireAdmin, updateSettingsHandler);
 
 // GET /api/privacy/budget
 router.get('/budget', authenticateToken, (req, res) => {
@@ -106,8 +107,8 @@ router.get('/budget', authenticateToken, (req, res) => {
   }
 });
 
-// POST /api/privacy/reset-budget
-router.post('/reset-budget', authenticateToken, (req, res) => {
+// Admin only: reset budget
+router.post('/reset-budget', authenticateToken, requireAdmin, (req, res) => {
   try {
     const db = getDB();
     db.prepare('UPDATE privacy_settings SET privacy_budget_used = 0').run();

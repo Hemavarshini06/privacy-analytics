@@ -14,6 +14,7 @@ import ComparisonPage from './pages/ComparisonPage';
 import ReportsPage from './pages/ReportsPage';
 import FeedbackPage from './pages/FeedbackPage';
 import DocsPage from './pages/DocsPage';
+import AccuracyEvaluationPage from './pages/AccuracyEvaluationPage';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -26,6 +27,14 @@ function ProtectedRoute({ children }) {
     </div>
   );
   return user ? children : <Navigate to="/login" replace />;
+}
+
+function RoleRoute({ roles, children }) {
+  const { user } = useAuth();
+  if (!roles.includes(user?.role)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return children;
 }
 
 function AppRoutes() {
@@ -44,7 +53,8 @@ function AppRoutes() {
         <Route path="events" element={<SimulatorPage />} />
         <Route path="simulator" element={<SimulatorPage />} />
         <Route path="analytics" element={<AnalyticsPage />} />
-        <Route path="privacy" element={<PrivacyPage />} />
+        <Route path="accuracy-evaluation" element={<AccuracyEvaluationPage />} />
+        <Route path="privacy" element={<RoleRoute roles={['admin']}><PrivacyPage /></RoleRoute>} />
         <Route path="simulation" element={<SimulatorPage />} />
         <Route path="comparison" element={<ComparisonPage />} />
         <Route path="reports" element={<ReportsPage />} />

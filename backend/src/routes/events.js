@@ -1,7 +1,7 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { getDB } = require('../db/database');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, requireAdmin } = require('../middleware/auth');
 const { applyLaplaceMechanism } = require('../utils/privacy');
 
 const router = express.Router();
@@ -151,8 +151,8 @@ router.get('/summary', authenticateToken, (req, res) => {
   }
 });
 
-// DELETE /api/events/clear
-router.delete('/clear', authenticateToken, (req, res) => {
+// DELETE /api/events/clear (Admin only)
+router.delete('/clear', authenticateToken, requireAdmin, (req, res) => {
   try {
     const db = getDB();
     db.exec('DELETE FROM events; DELETE FROM sessions;');

@@ -4,16 +4,17 @@ import { useDarkMode } from '../hooks/useDarkMode';
 import { useState } from 'react';
 
 const navItems = [
-  { to: '/dashboard', label: 'Dashboard', icon: '📊' },
-  { to: '/workflows', label: 'Workflows', icon: '🔧' },
-  { to: '/events', label: 'Event Generator', icon: '⚡' },
-  { to: '/analytics', label: 'Analytics', icon: '📈' },
-  { to: '/privacy', label: 'Privacy Settings', icon: '🔐' },
-  { to: '/simulation', label: 'DP Simulation', icon: '🧮' },
-  { to: '/comparison', label: 'Comparison', icon: '⚖️' },
-  { to: '/reports', label: 'Reports', icon: '📄' },
-  { to: '/feedback', label: 'Feedback', icon: '💬' },
-  { to: '/docs', label: 'Documentation', icon: '📚' },
+  { to: '/dashboard', label: 'Dashboard', icon: '📊', roles: ['admin', 'analyst'] },
+  { to: '/workflows', label: 'Workflows', icon: '🔧', roles: ['admin', 'analyst'] },
+  { to: '/events', label: 'Event Generator', icon: '⚡', roles: ['admin', 'analyst'] },
+  { to: '/analytics', label: 'Analytics', icon: '📈', roles: ['admin', 'analyst'] },
+  { to: '/accuracy-evaluation', label: 'Accuracy Evaluation', icon: '🎯', roles: ['admin', 'analyst'] },
+  { to: '/privacy', label: 'Privacy Settings', icon: '🔐', roles: ['admin'] },
+  { to: '/simulation', label: 'DP Simulation', icon: '🧮', roles: ['admin', 'analyst'] },
+  { to: '/comparison', label: 'Comparison', icon: '⚖️', roles: ['admin', 'analyst'] },
+  { to: '/reports', label: 'Reports', icon: '📄', roles: ['admin', 'analyst'] },
+  { to: '/feedback', label: 'Feedback', icon: '💬', roles: ['admin', 'analyst'] },
+  { to: '/docs', label: 'Documentation', icon: '📚', roles: ['admin', 'analyst'] },
 ];
 
 export default function Layout() {
@@ -21,6 +22,10 @@ export default function Layout() {
   const [dark, setDark] = useDarkMode();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  const filteredNavItems = navItems.filter(
+    (item) => !item.roles || item.roles.includes(user?.role || 'analyst')
+  );
 
   const handleLogout = () => {
     logout();
@@ -44,7 +49,7 @@ export default function Layout() {
 
         {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
-          {navItems.map(item => (
+          {filteredNavItems.map(item => (
             <NavLink
               key={item.to}
               to={item.to}

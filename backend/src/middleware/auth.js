@@ -19,11 +19,20 @@ function authenticateToken(req, res, next) {
   });
 }
 
-function requireAdmin(req, res, next) {
-  if (req.user?.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  next();
+function requireRole(allowedRoles) {
+  const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ 
+        error: `Access denied. Authorized roles: [${roles.join(', ')}]. Your current role is: ${req.user?.role || 'unassigned'}.`,
+        requiredRoles: roles,
+        currentRole: req.user?.role
+      });
+    }
+    next();
+  };
 }
 
-module.exports = { authenticateToken, requireAdmin, JWT_SECRET };
+const requireAdmin = requireRole('admin');
+
+module.exports = { authenticateToken, requireRole, requireAdmin, JWT_SECRET };
