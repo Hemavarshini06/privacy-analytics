@@ -29,29 +29,44 @@ router.get('/kpis', authenticateToken, (req, res) => {
     const total = db.prepare('SELECT COUNT(*) as cnt FROM sessions WHERE workflow_id = ?').get(workflowId);
     const completed = db.prepare('SELECT COUNT(*) as cnt FROM sessions WHERE workflow_id = ? AND is_completed = 1').get(workflowId);
     const withConsent = db.prepare('SELECT COUNT(*) as cnt FROM sessions WHERE workflow_id = ? AND consent_given = 1').get(workflowId);
+    const totalEventsRow = db.prepare('SELECT COUNT(*) as cnt FROM events WHERE workflow_id = ?').get(workflowId);
 
     const totalCnt = total ? total.cnt : 0;
     const compCnt = completed ? completed.cnt : 0;
     const consentCnt = withConsent ? withConsent.cnt : 0;
+    const totalEvents = totalEventsRow ? totalEventsRow.cnt : 0;
 
     const completionRate = totalCnt > 0 ? parseFloat(((compCnt / totalCnt) * 100).toFixed(1)) : 0;
     const abandonmentRate = parseFloat((100 - completionRate).toFixed(1));
     const consentRate = totalCnt > 0 ? parseFloat(((consentCnt / totalCnt) * 100).toFixed(1)) : 0;
     const privacyScore = Math.min(100, Math.round((1 / eps) * 30 + consentRate * 0.5 + 20));
 
+    const warnings = checkFailureCases({
+      totalSessions: totalCnt,
+      consentRate: totalCnt > 0 ? consentCnt / totalCnt : 1.0,
+      epsilon: eps,
+    });
+
     res.json({
       totalUsers: totalCnt,
       totalSessions: totalCnt,
+      uniqueUsers: totalCnt,
+      totalEvents,
       completedUsers: compCnt,
       completedSessions: compCnt,
       abandonedUsers: totalCnt - compCnt,
       abandonedSessions: totalCnt - compCnt,
+      consentingUsers: consentCnt,
       completionRate,
       abandonmentRate,
       consentRate,
       privacyScore,
       epsilon: eps,
       privacyMode: settings?.privacy_mode || 'differential_privacy',
+      budgetUsed: settings?.privacy_budget_used || 0,
+      totalBudget: settings?.privacy_budget_total || 10,
+      budgetTotal: settings?.privacy_budget_total || 10,
+      warnings: warnings.map(w => w.message),
     });
   } catch (err) {
     console.error(err);
@@ -137,7 +152,7 @@ router.get('/dropoff', authenticateToken, (req, res) => {
       SELECT * FROM stages WHERE workflow_id = ? ORDER BY stage_order
     `).all(workflowId);
 
-    const stageData = stages.map((stage, idx) => {
+    const stageData = stages.map((stage) => {
       const actual = db.prepare(`
         SELECT COUNT(DISTINCT session_id) as cnt FROM events WHERE workflow_id = ? AND stage_order = ?
       `).get(workflowId, stage.stage_order);
@@ -150,7 +165,14 @@ router.get('/dropoff', authenticateToken, (req, res) => {
     });
 
     const dropoff = stageData.map((stage, idx) => {
-      if (idx === 0) return { ...stage, dropOffRate: 0, droppedUsers: 0 };
+      if (idx === 0) {
+        return { 
+          ...stage, 
+          droppedUsers: 0, 
+          dropOffRate: 0, 
+          abandonmentRate: 0 
+        };
+      }
       const prev = stageData[idx - 1].count;
       const dropped = Math.max(0, prev - stage.count);
       const rate = prev > 0 ? parseFloat(((dropped / prev) * 100).toFixed(1)) : 0;
@@ -160,6 +182,7 @@ router.get('/dropoff', authenticateToken, (req, res) => {
         stage_order: stage.stage_order,
         droppedUsers: dropped,
         dropOffRate: rate,
+        abandonmentRate: parseFloat((rate / 100).toFixed(4)),
       };
     });
 
@@ -174,21 +197,23 @@ router.get('/trend', authenticateToken, (req, res) => {
   try {
     const db = getDB();
     const workflowId = getActiveWorkflowId(db, req);
-    const activity = db.prepare(`
+    const activityDesc = db.prepare(`
       SELECT DATE(started_at) as date, 
              COUNT(*) as total,
              SUM(is_completed) as completed
       FROM sessions 
       WHERE workflow_id = ?
       GROUP BY DATE(started_at) 
-      ORDER BY date ASC LIMIT 14
+      ORDER BY date DESC LIMIT 14
     `).all(workflowId);
 
+    const activity = activityDesc.reverse();
     const dates = activity.map(a => a.date);
     const completions = activity.map(a => a.completed);
     const abandonments = activity.map(a => a.total - a.completed);
+    const totals = activity.map(a => a.total);
 
-    res.json({ dates, completions, abandonments, activity });
+    res.json({ dates, completions, abandonments, totals, activity });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -205,12 +230,14 @@ router.get('/consent', authenticateToken, (req, res) => {
     const consented = withConsent ? withConsent.cnt : 0;
     const declined = withoutConsent ? withoutConsent.cnt : 0;
     const total = consented + declined;
+    const consentRate = total > 0 ? parseFloat(((consented / total) * 100).toFixed(1)) : 0;
 
     res.json({
       consented,
       declined,
       total,
-      consentRate: total > 0 ? parseFloat(((consented / total) * 100).toFixed(1)) : 0,
+      consentRate,
+      percentage: consentRate, // Supports AnalyticsPage.jsx consent.percentage
     });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
@@ -229,6 +256,13 @@ router.get('/comparison', authenticateToken, (req, res) => {
       SELECT * FROM stages WHERE workflow_id = ? ORDER BY stage_order
     `).all(workflowId);
 
+    const totalSessions = db.prepare('SELECT COUNT(*) as cnt FROM sessions WHERE workflow_id = ?').get(workflowId);
+    const completedSessions = db.prepare('SELECT COUNT(*) as cnt FROM sessions WHERE workflow_id = ? AND is_completed = 1').get(workflowId);
+
+    const rawTotal = totalSessions ? totalSessions.cnt : 0;
+    const rawCompleted = completedSessions ? completedSessions.cnt : 0;
+    const baseCompletionRate = rawTotal > 0 ? parseFloat((rawCompleted / rawTotal).toFixed(4)) : 0;
+
     const compStages = stages.map(stage => {
       const actual = db.prepare(`
         SELECT COUNT(DISTINCT session_id) as cnt FROM events WHERE workflow_id = ? AND stage_order = ?
@@ -236,12 +270,19 @@ router.get('/comparison', authenticateToken, (req, res) => {
       const dp = applyLaplaceMechanism(actual.cnt, eps);
       const absErr = Math.abs(actual.cnt - dp.noisyCount);
       const relErr = actual.cnt > 0 ? parseFloat(((absErr / actual.cnt) * 100).toFixed(1)) : 0;
+      const countDiff = dp.noisyCount - actual.cnt;
 
       return {
+        stage_id: stage.id,
         stage_name: stage.name,
         stage_order: stage.stage_order,
         rawCount: actual.cnt,
+        entered: actual.cnt,
+        count: actual.cnt,
         noisyCount: dp.noisyCount,
+        noisyEntered: dp.noisyCount,
+        noiseAdded: parseFloat(dp.noiseAdded.toFixed(2)),
+        countDiff,
         absoluteError: absErr,
         relativeError: relErr,
       };
@@ -251,14 +292,65 @@ router.get('/comparison', authenticateToken, (req, res) => {
     const noisyCounts = compStages.map(s => s.noisyCount);
     const acc = computeAccuracy(rawCounts, noisyCounts);
 
-    res.json({
+    const firstStageNoisy = compStages.length > 0 ? compStages[0].noisyCount : rawTotal;
+    const lastStageNoisy = compStages.length > 0 ? compStages[compStages.length - 1].noisyCount : rawCompleted;
+    const dpCompletionRate = firstStageNoisy > 0 ? parseFloat((lastStageNoisy / firstStageNoisy).toFixed(4)) : baseCompletionRate;
+
+    const baseline = {
+      stages: compStages.map(s => ({
+        stage_id: s.stage_id,
+        stage_name: s.stage_name,
+        stage_order: s.stage_order,
+        entered: s.rawCount,
+        count: s.rawCount,
+      })),
+      totalSessions: rawTotal,
+      completedSessions: rawCompleted,
+      completionRate: baseCompletionRate,
+      completionRatePct: parseFloat((baseCompletionRate * 100).toFixed(2)),
+    };
+
+    const dpArray = compStages.map(s => ({
+      stage_id: s.stage_id,
+      stage_name: s.stage_name,
+      stage_order: s.stage_order,
+      noisyEntered: s.noisyCount,
+      count: s.noisyCount,
+      noiseAdded: s.noiseAdded,
+      absoluteError: s.absoluteError,
+      relativeError: s.relativeError,
+    }));
+    dpArray.completionRate = dpCompletionRate;
+    dpArray.completionRatePct = parseFloat((dpCompletionRate * 100).toFixed(2));
+    dpArray.stages = dpArray;
+
+    const summary = {
       epsilon: eps,
-      stages: compStages,
+      rawTotalSessions: rawTotal,
+      rawCompletedSessions: rawCompleted,
+      rawCompletionRate: parseFloat((baseCompletionRate * 100).toFixed(2)),
+      dpCompletionRate: parseFloat((dpCompletionRate * 100).toFixed(2)),
       overallAccuracy: parseFloat(acc.accuracyPercent),
       meanAbsoluteError: parseFloat(acc.meanAbsoluteError),
       errorPercent: parseFloat(acc.errorPercent),
+      maxDeviation: Math.max(...compStages.map(s => s.absoluteError), 0),
+      privacyImpact: eps <= 0.5 ? 'Strong privacy guarantee with higher variance in low-volume stages' : 'Balanced privacy-utility tradeoff maintaining high conversion visibility',
+    };
+
+    res.json({
+      epsilon: eps,
+      errorPct: parseFloat(acc.errorPercent),
+      accuracyPct: parseFloat(acc.accuracyPercent),
+      overallAccuracy: parseFloat(acc.accuracyPercent),
+      meanAbsoluteError: parseFloat(acc.meanAbsoluteError),
+      errorPercent: parseFloat(acc.errorPercent),
+      stages: compStages,
+      baseline,
+      dp: dpArray,
+      summary,
     });
   } catch (err) {
+    console.error('Comparison error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
