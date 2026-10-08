@@ -60,6 +60,36 @@ router.post('/', authenticateToken, (req, res) => {
     const noisyCounts = compStages.map(s => s.noisyCount);
     const acc = computeAccuracy(rawCounts, noisyCounts);
 
+    const baseFirst = compStages.length > 0 ? compStages[0].rawCount : 0;
+    const baseLast = compStages.length > 0 ? compStages[compStages.length - 1].rawCount : 0;
+    const baseCompletionRate = baseFirst > 0 ? parseFloat((baseLast / baseFirst).toFixed(4)) : 0;
+
+    const dpFirst = compStages.length > 0 ? compStages[0].noisyCount : 0;
+    const dpLast = compStages.length > 0 ? compStages[compStages.length - 1].noisyCount : 0;
+    const dpCompletionRate = dpFirst > 0 ? parseFloat((dpLast / dpFirst).toFixed(4)) : baseCompletionRate;
+
+    const baseline = {
+      stages: compStages.map(s => ({
+        stage_name: s.stage_name,
+        stage_order: s.stage_order,
+        entered: s.rawCount,
+        count: s.rawCount,
+      })),
+      completionRate: baseCompletionRate,
+    };
+
+    const dpArray = compStages.map(s => ({
+      stage_name: s.stage_name,
+      stage_order: s.stage_order,
+      noisyEntered: s.noisyCount,
+      count: s.noisyCount,
+      noiseAdded: s.noiseAdded || 0,
+      absoluteError: s.absoluteError,
+      relativeError: s.relativeError,
+    }));
+    dpArray.completionRate = dpCompletionRate;
+    dpArray.stages = dpArray;
+
     res.json({
       experiment: {
         name: experiment_name,
@@ -70,6 +100,10 @@ router.post('/', authenticateToken, (req, res) => {
       comparison: {
         epsilon: eps,
         stages: compStages,
+        baseline,
+        dp: dpArray,
+        errorPct: parseFloat(acc.errorPercent),
+        accuracyPct: parseFloat(acc.accuracyPercent),
         overallAccuracy: parseFloat(acc.accuracyPercent),
         meanAbsoluteError: parseFloat(acc.meanAbsoluteError),
       }
